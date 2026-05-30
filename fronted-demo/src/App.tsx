@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import useSWR from "swr";
 import {
   Archive,
@@ -57,105 +57,93 @@ type GeneratedContent = {
   generatedAt: string;
 };
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+type ApiCourse = {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+};
 
-const initialCourses: Course[] = [
-  {
-    id: "c-1",
-    title: "Neural Signal Processing",
-    level: "Advanced",
-    description: "Signal pipelines, denoising strategies, and analysis workflows.",
-    updatedAt: "Apr 1, 2026",
-  },
-  {
-    id: "c-2",
-    title: "Applied Research Writing",
-    level: "Intermediate",
-    description: "Building publishable papers with structured argumentation.",
-    updatedAt: "Mar 27, 2026",
-  },
-  {
-    id: "c-3",
-    title: "Foundations of Data Literacy",
-    level: "Beginner",
-    description: "Core data terms, interpretation, and communication essentials.",
-    updatedAt: "Mar 22, 2026",
-  },
-];
+type ApiCourseDocument = {
+  filePath: string;
+  title: string;
+  category: string;
+  sourcePath: string;
+  createdAt: string;
+};
 
-const initialDocuments: ArchiveDocument[] = [
-  {
-    id: "d-1",
-    title: "Week 4 EEG Lab Notes.pdf",
-    courseId: "c-1",
-    type: "PDF",
-    uploadedAt: "Apr 1, 2026",
-  },
-  {
-    id: "d-2",
-    title: "Signal Features Matrix.csv",
-    courseId: "c-1",
-    type: "CSV",
-    uploadedAt: "Mar 30, 2026",
-  },
-  {
-    id: "d-3",
-    title: "Proposal Rubric.docx",
-    courseId: "c-2",
-    type: "DOCX",
-    uploadedAt: "Mar 29, 2026",
-  },
-  {
-    id: "d-4",
-    title: "Dataset Glossary.csv",
-    courseId: "c-3",
-    type: "CSV",
-    uploadedAt: "Mar 24, 2026",
-  },
-];
+const API_BASE = (import.meta.env.VITE_API_URL ?? "http://localhost:3000").replace(/\/$/, "");
 
-const initialGenerated: GeneratedContent[] = [
-  {
-    id: "g-1",
-    title: "Chapter 3 Concept Summary",
-    courseId: "c-3",
-    kind: "Summary",
-    generatedAt: "Apr 2, 2026",
-  },
-  {
-    id: "g-2",
-    title: "Signal Filtering Quiz - Set A",
-    courseId: "c-1",
-    kind: "Quiz",
-    generatedAt: "Apr 1, 2026",
-  },
-  {
-    id: "g-3",
-    title: "Research Terms Flashcards",
-    courseId: "c-2",
-    kind: "Flashcards",
-    generatedAt: "Mar 30, 2026",
-  },
-];
+const formatDate = (iso: string) => {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown";
+  }
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+};
+
+const getFileExtension = (name: string) => {
+  if (!name.includes(".")) {
+    return "FILE";
+  }
+  return name.split(".").pop()?.toUpperCase() ?? "FILE";
+};
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error ?? `Request failed with status ${response.status}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+const mapCourse = (course: ApiCourse): Course => ({
+  id: course.id,
+  title: course.name,
+  level: "Beginner",
+  description: course.description ?? "No description yet.",
+  updatedAt: formatDate(course.createdAt),
+});
+
+const mapDocument = (doc: ApiCourseDocument, courseId: string): ArchiveDocument => ({
+  id: doc.filePath,
+  title: doc.title,
+  courseId,
+  type: doc.category?.toUpperCase() || getFileExtension(doc.sourcePath || doc.title),
+  uploadedAt: formatDate(doc.createdAt),
+});
 
 const fetchCourses = async () => {
-  await wait(220);
-  return initialCourses;
+  const courses = await apiFetch<ApiCourse[]>("/courses");
+  return courses.map(mapCourse);
 };
 
-const fetchDocuments = async () => {
-  await wait(260);
-  return initialDocuments;
+const fetchDocuments = async (courseId: string) => {
+  if (!courseId) {
+    return [] as ArchiveDocument[];
+  }
+  const docs = await apiFetch<ApiCourseDocument[]>(`/courses/${courseId}/documents`);
+  return docs.map((doc) => mapDocument(doc, courseId));
 };
 
-const fetchGenerated = async () => {
-  await wait(290);
-  return initialGenerated;
-};
+const fetchGenerated = async () => [] as GeneratedContent[];
 
 function App() {
   const [view, setView] = useState<View>("courses");
-  const [selectedCourseId, setSelectedCourseId] = useState("c-1");
+  const [selectedCourseId, setSelectedCourseId] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [archiveQuery, setArchiveQuery] = useState("");
   const [generatedQuery, setGeneratedQuery] = useState("");
@@ -171,19 +159,34 @@ function App() {
   const { data: courses = [], mutate: mutateCourses } = useSWR("courses", fetchCourses, {
     revalidateOnFocus: false,
   });
-  const { data: documents = [], mutate: mutateDocuments } = useSWR("documents", fetchDocuments, {
-    revalidateOnFocus: false,
-  });
+  const { data: documents = [], mutate: mutateDocuments } = useSWR(
+    selectedCourseId ? ["documents", selectedCourseId] : null,
+    ([, courseId]) => fetchDocuments(courseId),
+    {
+      revalidateOnFocus: false,
+    }
+  );
   const { data: generated = [] } = useSWR("generated", fetchGenerated, {
     revalidateOnFocus: false,
   });
 
+  useEffect(() => {
+    if (!courses.length) {
+      if (selectedCourseId !== "") {
+        setSelectedCourseId("");
+      }
+      return;
+    }
+
+    const exists = courses.some((course) => course.id === selectedCourseId);
+    if (!exists) {
+      setSelectedCourseId(courses[0].id);
+    }
+  }, [courses, selectedCourseId]);
+
   const selectedCourse = courses.find((course) => course.id === selectedCourseId) ?? null;
 
-  const courseDocuments = useMemo(
-    () => documents.filter((doc) => doc.courseId === selectedCourseId),
-    [documents, selectedCourseId]
-  );
+  const courseDocuments = useMemo(() => documents, [documents]);
 
   const courseGenerated = useMemo(
     () => generated.filter((item) => item.courseId === selectedCourseId),
@@ -209,27 +212,29 @@ function App() {
       return;
     }
 
-    const created: Course = {
-      id: `c-${crypto.randomUUID()}`,
-      title: newTitle.trim(),
-      level: newLevel,
-      description: newDescription.trim() || "No description yet.",
-      updatedAt: new Date().toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      }),
-    };
+    try {
+      const createdApi = await apiFetch<ApiCourse>("/courses", {
+        method: "POST",
+        body: JSON.stringify({
+          name: newTitle.trim(),
+          description: newDescription.trim() || undefined,
+        }),
+      });
 
-    await mutateCourses((current = []) => [created, ...current], false);
+      const created = mapCourse(createdApi);
 
-    setSelectedCourseId(created.id);
-    setView("courses");
-    setCreateOpen(false);
-    setNewTitle("");
-    setNewDescription("");
-    setNewLevel("Beginner");
-    setNotice(`Created ${created.title}. Opened for document uploads.`);
+      await mutateCourses((current = []) => [created, ...current], false);
+      setSelectedCourseId(created.id);
+      setView("courses");
+      setCreateOpen(false);
+      setNewTitle("");
+      setNewDescription("");
+      setNewLevel("Beginner");
+      setNotice(`Created ${created.title}. Opened for document uploads.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to create course";
+      setNotice(message);
+    }
   };
 
   const handleUploadFiles = async (files: FileList | null) => {
@@ -238,25 +243,35 @@ function App() {
     const names = Array.from(files).map((file) => file.name);
     setUploadQueue(names);
 
-    const now = new Date().toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
+    let successCount = 0;
 
-    const newDocs: ArchiveDocument[] = names.map((name) => {
-      const ext = name.includes(".") ? name.split(".").pop()!.toUpperCase() : "FILE";
-      return {
-        id: `d-${crypto.randomUUID()}`,
-        title: name,
-        courseId: selectedCourse.id,
-        type: ext,
-        uploadedAt: now,
-      };
-    });
+    for (const file of Array.from(files)) {
+      const formData = new FormData();
+      formData.append("file", file);
 
-    await mutateDocuments((current = []) => [...newDocs, ...current], false);
-    setNotice(`Uploaded ${newDocs.length} document(s) to ${selectedCourse.title}.`);
+      try {
+        const response = await fetch(`${API_BASE}/courses/${selectedCourse.id}/documents`, {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(payload?.error ?? `Upload failed with status ${response.status}`);
+        }
+
+        successCount += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Upload failed";
+        setNotice(message);
+      }
+    }
+
+    await mutateDocuments();
+
+    if (successCount > 0) {
+      setNotice(`Uploaded ${successCount} document(s) to ${selectedCourse.title}.`);
+    }
   };
 
   return (
