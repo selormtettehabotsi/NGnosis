@@ -1,5 +1,11 @@
+import "dotenv/config";
 import express from "express";
+import authRouter from "./routes/auth";
 import coursesRouter from "./routes/courses";
+
+if (!process.env.JWT_SECRET?.trim()) {
+  throw new Error("JWT_SECRET environment variable is required");
+}
 
 const app = express();
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
@@ -17,6 +23,7 @@ app.use((req, res, next) => {
 
   next();
 });
+app.use(authRouter);
 app.use(coursesRouter);
 
 app.get("/", (_req, res) => {

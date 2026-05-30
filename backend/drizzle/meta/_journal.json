@@ -8,6 +8,20 @@
       "when": 1775088747758,
       "tag": "0000_volatile_korg",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1775238429550,
+      "tag": "0001_good_mystique",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1775326482388,
+      "tag": "0002_peaceful_skrulls",
+      "breakpoints": true
     }
   ]
 }

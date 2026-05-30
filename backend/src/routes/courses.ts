@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import express, { Request, Response } from "express";
 import multer from "multer";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db } from "../db";
 import { courses, documents } from "../db/schema";
 import { grepDocuments, semanticSearch } from "../context";
@@ -16,8 +16,23 @@ import {
   runIngestionModel,
   writeToRepository,
 } from "../ingestion";
+import { requireAuth } from "../auth/jwt";
+import { requireVerified } from "../auth/requireVerified";
 
 const router = express.Router();
+
+// All course routes require authentication + verified email
+router.use("/courses", requireAuth, requireVerified);
+router.use("/context", requireAuth, requireVerified);
+router.use("/documents", requireAuth, requireVerified);
+router.use("/archive", requireAuth, requireVerified);
+
+function routeParam(value: string | string[] | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return Array.isArray(value) ? value[0] : value;
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -38,6 +53,7 @@ const upload = multer({
 router.post("/courses", async (req: Request, res: Response) => {
   try {
     const { name, description } = req.body;
+    const userId = req.user!.id;
 
     if (!name || typeof name !== "string" || name.trim() === "") {
       return res.status(400).json({ error: "name is required" });
@@ -48,6 +64,7 @@ router.post("/courses", async (req: Request, res: Response) => {
 
     await db.insert(courses).values({
       id,
+      userId,
       name: name.trim(),
       description: typeof description === "string" ? description.trim() : null,
       createdAt: now,
@@ -64,14 +81,23 @@ router.post("/courses", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/courses", async (_req: Request, res: Response) => {
-  const all = await db.query.courses.findMany();
+router.get("/courses", async (req: Request, res: Response) => {
+  const userId = req.user!.id;
+  const all = await db.query.courses.findMany({
+    where: eq(courses.userId, userId),
+  });
   return res.status(200).json(all);
 });
 
 router.get("/courses/:courseId", async (req: Request, res: Response) => {
+  const courseId = routeParam(req.params.courseId);
+  const userId = req.user!.id;
+  if (!courseId) {
+    return res.status(400).json({ error: "Course id is required" });
+  }
+
   const course = await db.query.courses.findFirst({
-    where: eq(courses.id, req.params.courseId),
+    where: and(eq(courses.id, courseId), eq(courses.userId, userId)),
     with: { topics: true },
   });
 
@@ -83,10 +109,14 @@ router.get("/courses/:courseId", async (req: Request, res: Response) => {
 });
 
 router.get("/courses/:courseId/documents", async (req: Request, res: Response) => {
-  const { courseId } = req.params;
+  const courseId = routeParam(req.params.courseId);
+  const userId = req.user!.id;
+  if (!courseId) {
+    return res.status(400).json({ error: "Course id is required" });
+  }
 
   const course = await db.query.courses.findFirst({
-    where: eq(courses.id, courseId),
+    where: and(eq(courses.id, courseId), eq(courses.userId, userId)),
   });
   if (!course) {
     return res.status(404).json({ error: "Course not found" });
@@ -123,15 +153,19 @@ router.post(
   upload.single("file"),
   async (req: Request, res: Response) => {
     try {
-      const { courseId } = req.params;
+      const courseId = routeParam(req.params.courseId);
+      if (!courseId) {
+        return res.status(400).json({ error: "Course id is required" });
+      }
       const file = req.file;
 
       if (!file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
+      const userId = req.user!.id;
       const course = await db.query.courses.findFirst({
-        where: eq(courses.id, courseId),
+        where: and(eq(courses.id, courseId), eq(courses.userId, userId)),
       });
       if (!course) {
         return res.status(404).json({ error: "Course not found" });
@@ -274,8 +308,8 @@ router.get("/documents", async (req: Request, res: Response) => {
 });
 
 router.get("/documents/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  if (!/^[a-f0-9]{12}$/i.test(id)) {
+  const id = routeParam(req.params.id);
+  if (!id || !/^[a-f0-9]{12}$/i.test(id)) {
     return res.status(400).json({ error: "Invalid document id" });
   }
 
@@ -331,8 +365,8 @@ router.get("/archive", async (req: Request, res: Response) => {
 });
 
 router.get("/archive/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  if (!/^[a-z0-9]+(?:\.[a-z0-9]+)?$/i.test(id)) {
+  const id = routeParam(req.params.id);
+  if (!id || !/^[a-z0-9]+(?:\.[a-z0-9]+)?$/i.test(id)) {
     return res.status(400).json({ error: "Invalid archive id" });
   }
 
